@@ -15,6 +15,18 @@ package frc.robot;
 public final class Constants {
 
   public static final double MAX_SPEED = 4.5; // meters per second
+  public static final double MAX_ANGULAR_VELOCITY = 10.0; // radians per second
+
+  public static final class DrivebaseConstants
+  {
+
+    // Hold time on motor brakes when disabled
+    public static final double WHEEL_LOCK_TIME = 10; // seconds
+  }
+
+  public static class VisionConstants {
+    public static final double VISION_TURN_kP = 0.02; // Proportional control constant for vision aiming
+  }
 
   public static class OperatorConstants {
     public static final int kDriverControllerPort = 0;

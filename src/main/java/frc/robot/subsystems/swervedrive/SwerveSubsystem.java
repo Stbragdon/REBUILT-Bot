@@ -17,6 +17,8 @@ import com.pathplanner.lib.path.PathPlannerPath;
 import com.pathplanner.lib.util.DriveFeedforwards;
 import com.pathplanner.lib.util.swerve.SwerveSetpoint;
 import com.pathplanner.lib.util.swerve.SwerveSetpointGenerator;
+
+import edu.wpi.first.math.MathUtil;
 import edu.wpi.first.math.controller.SimpleMotorFeedforward;
 import edu.wpi.first.math.geometry.Pose2d;
 import edu.wpi.first.math.geometry.Rotation2d;
@@ -27,9 +29,11 @@ import edu.wpi.first.math.trajectory.Trajectory;
 import edu.wpi.first.math.util.Units;
 import edu.wpi.first.wpilibj.DriverStation;
 import edu.wpi.first.wpilibj.Timer;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
 import edu.wpi.first.wpilibj2.command.Commands;
 import edu.wpi.first.wpilibj2.command.SubsystemBase;
+import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.RobotModeTriggers;
 import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine.Config;
 import frc.robot.Constants;
@@ -42,7 +46,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 import org.json.simple.parser.ParseException;
+import org.photonvision.PhotonCamera;
 import org.photonvision.targeting.PhotonPipelineResult;
+import org.photonvision.targeting.PhotonTrackedTarget;
+
 import swervelib.SwerveController;
 import swervelib.SwerveDrive;
 import swervelib.SwerveDriveTest;
@@ -63,11 +70,14 @@ public class SwerveSubsystem extends SubsystemBase
   /**
    * Enable vision odometry updates while driving.
    */
-  private final boolean     visionDriveTest = false;
+  private final boolean     visionDriveTest = true;
   /**
    * PhotonVision class to keep an accurate odometry.
    */
   private       Vision      vision;
+  
+  private boolean aimTargetVisible = false;
+  private double aimTargetYawDeg = 0.0;
 
   /**
    * Initialize {@link SwerveDrive} with the directory provided.
@@ -227,25 +237,120 @@ public class SwerveSubsystem extends SubsystemBase
    *
    * @return A {@link Command} which will run the alignment.
    */
-  public Command aimAtTarget(Cameras camera)
-  {
 
-    return run(() -> {
-      Optional<PhotonPipelineResult> resultO = camera.getBestResult();
-      if (resultO.isPresent())
-      {
-        var result = resultO.get();
-        if (result.hasTargets())
-        {
-          drive(getTargetSpeeds(0,
-                                0,
-                                Rotation2d.fromDegrees(result.getBestTarget()
-                                                             .getYaw()))); // Not sure if this will work, more math may be required.
+
+   // TELEOP WORKABLE VISION NEEDS TUNING
+  public Command aimAtTagTeleopCommand(
+        CommandXboxController controller,
+        PhotonCamera camera,
+        int tagId
+) {
+    return this.run(() -> {
+
+        // Driver keeps translation control
+        double forward = -controller.getLeftY() * Constants.MAX_SPEED;
+        double strafe  = -controller.getLeftX() * Constants.MAX_SPEED;
+
+        double turn = 0.0;
+
+        boolean targetVisible = false;
+        double targetYawDeg = 0.0;
+
+        // ---- Vision ----
+        var results = camera.getAllUnreadResults();
+        if (!results.isEmpty()) {
+            var result = results.get(results.size() - 1);
+            if (result.hasTargets()) {
+                for (PhotonTrackedTarget t : result.getTargets()) {
+                    if (t.getFiducialId() == tagId) {
+                        targetYawDeg = t.getYaw();
+                        targetVisible = true;
+                        break;
+                    }
+                }
+            }
         }
-      }
-    });
-  }
 
+        // ---- Aim-only rotation control ----
+        final double kP = 0.012; // Pretty tight tune
+        final double yawDeadband = 1.5;
+
+        if (targetVisible && Math.abs(targetYawDeg) > yawDeadband) {
+            double turnCmd = targetYawDeg * kP;
+            turnCmd = MathUtil.clamp(turnCmd, -1.0, 1.0);
+            turn = turnCmd * Constants.MAX_ANGULAR_VELOCITY;
+        } else {
+            turn = 0;
+        }
+
+        // ---- Drive with driver translation + vision rotation ----
+        drive(
+            new Translation2d(forward, strafe),
+            turn,
+            true   // still field-relative for driver
+        );
+
+    }).withName("AimAtTagTeleop_" + tagId);
+}
+
+/**
+ * Auto / PathPlanner command that ONLY aims at a tag (no driving forward).
+ *
+ * @param camera PhotonCamera to use
+ * @param tagId  AprilTag ID to aim at
+ * NEEDS TUNING
+ */
+public Command aimAtTagCommand(PhotonCamera camera, int tagId) {
+
+  return Commands.run(() -> {
+
+      double turn = 0.0;
+      boolean targetVisible = false;
+      double targetYawDeg = 0.0;
+
+      // ---- Get vision results ----
+      var results = camera.getAllUnreadResults();
+      if (!results.isEmpty()) {
+          var result = results.get(results.size() - 1); // latest frame
+          if (result.hasTargets()) {
+              for (PhotonTrackedTarget target : result.getTargets()) {
+                  if (target.getFiducialId() == tagId) {
+                      targetYawDeg = target.getYaw();
+                      targetVisible = true;
+                      break;
+                  }
+              }
+          }
+      }
+
+      // Save for .until(...)
+      aimTargetVisible = targetVisible;
+      aimTargetYawDeg  = targetYawDeg;
+
+      // ---- Rotation-only P controller ----
+      if (targetVisible && Math.abs(targetYawDeg) > 1.5) {
+          double turnCommand = targetYawDeg * 0.015;
+          turnCommand = MathUtil.clamp(turnCommand, -1.0, 1.0);
+          turn = turnCommand * Constants.MAX_ANGULAR_VELOCITY;
+      } else {
+          turn = 0.0; // Close enough or no target
+      }
+
+      // ---- Drive rotation only, no translation ----
+      Translation2d translation = new Translation2d(0.0, 0.0);
+      boolean fieldRelative = false; // robot-relative turn
+
+      drive(translation, turn, fieldRelative);
+
+      // Debug (optional)
+      SmartDashboard.putBoolean("AimAtTag Visible", targetVisible);
+      SmartDashboard.putNumber("AimAtTag Yaw", targetYawDeg);
+
+  }, this)
+  .until(() -> aimTargetVisible && Math.abs(aimTargetYawDeg) < 1.5)
+  .withTimeout(2.0)   // safety timeout
+  .withName("AimAtTag_" + tagId);
+}
   /**
    * Get the path follower with events.
    *
