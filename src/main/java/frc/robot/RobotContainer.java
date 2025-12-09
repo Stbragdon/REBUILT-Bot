@@ -20,7 +20,7 @@ import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.Trigger;
 import frc.robot.Constants.OperatorConstants;
 import frc.robot.subsystems.swervedrive.SwerveSubsystem;
-import frc.robot.subsystems.swervedrive.Vision.Cameras;
+
 
 import java.io.File;
 
@@ -43,7 +43,6 @@ public class RobotContainer
   // The robot's subsystems and commands are defined here...
   private final SwerveSubsystem       drivebase  = new SwerveSubsystem(new File(Filesystem.getDeployDirectory(),
                                                                                 "swerve"));
-
   /**
    * Converts driver input into a field-relative ChassisSpeeds that is controlled by angular velocity.
    */
@@ -177,7 +176,7 @@ public class RobotContainer
     {
       driverXbox.x().onTrue((Commands.runOnce(drivebase::zeroGyro)));
       driverXbox.y().onTrue(Commands.runOnce(drivebase::addFakeVisionReading));
-      driverXbox.a().whileTrue(drivebase.aimAtTagTeleopCommand(driverXbox, camera, 1));
+      driverXbox.a().whileTrue(drivebase.aimAndDriveAtTag(driverXbox, camera, 1));
       driverXbox.back().whileTrue(Commands.none());
       driverXbox.leftBumper().whileTrue(Commands.runOnce(drivebase::lock, drivebase).repeatedly());
       driverXbox.rightBumper().onTrue(Commands.none());
@@ -199,5 +198,10 @@ public class RobotContainer
   public void setMotorBrake(boolean brake)
   {
     drivebase.setMotorBrake(brake);
+  }
+
+  public void zeroGyro()
+  {
+    drivebase.zeroGyroWithAlliance();
   }
 }

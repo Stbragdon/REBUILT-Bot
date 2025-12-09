@@ -75,7 +75,7 @@ public class SwerveSubsystem extends SubsystemBase
    * PhotonVision class to keep an accurate odometry.
    */
   private       Vision      vision;
-  
+
   private boolean aimTargetVisible = false;
   private double aimTargetYawDeg = 0.0;
 
@@ -293,6 +293,115 @@ public class SwerveSubsystem extends SubsystemBase
     }).withName("AimAtTagTeleop_" + tagId);
 }
 
+public Command aimAndDriveAtTag(
+        CommandXboxController controller,
+        PhotonCamera camera,
+        int tagId
+) {
+    return this.run(() -> {
+
+        // ---- Driver translation input ----
+        double driverForward = -controller.getLeftY() * Constants.MAX_SPEED;
+        double strafe        = -controller.getLeftX() * Constants.MAX_SPEED;
+
+        double forward = 0.0;
+        double turn    = 0.0;
+
+        boolean targetVisible = false;
+        double targetYawDeg   = 0.0;
+        double distanceM      = 0.0; // camera → tag distance
+
+        // ---- Vision ----
+        var results = camera.getAllUnreadResults();
+        if (!results.isEmpty()) {
+            var result = results.get(results.size() - 1);
+            if (result.hasTargets()) {
+                for (PhotonTrackedTarget t : result.getTargets()) {
+                    if (t.getFiducialId() == tagId) {
+
+                        targetYawDeg = t.getYaw();
+
+                        // Get camera-to-target transform.
+                        var camToTarget = t.getBestCameraToTarget();
+
+                        // Use absolute forward distance so sign issues don't kill us.
+                        // If this still looks wrong on the robot, try getZ() here instead.
+                        distanceM = camToTarget.getX();
+
+                        targetVisible = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ---- Aim-only rotation control ----
+        final double kPYaw       = 0.012;
+        final double yawDeadband = 1.5; // degrees
+
+        if (targetVisible && Math.abs(targetYawDeg) > yawDeadband) {
+            double turnCmd = targetYawDeg * kPYaw;
+            turnCmd = MathUtil.clamp(turnCmd, -1.0, 1.0);
+            turn = turnCmd * Constants.MAX_ANGULAR_VELOCITY;
+        } else {
+            turn = 0.0;
+        }
+
+        // ---- Range (forward/backward) control ----
+        // Desired stand-off distance camera↔tag.
+        final double desiredRangeM   = 10;   // try 2.5–3.0 to stay WELL back
+        final double kPRange         = 0.5;   // start small, we can bump later
+        final double rangeDeadbandM  = 0.05;  // ±5 cm
+        final double maxAutoSpeedPct = 0.3;   // % of MAX_SPEED for auto drive (nice and slow)
+
+        // Absolute "never get closer than this" safety distance:
+        final double minDistanceM    = 1.5;   // hard floor — won’t drive closer than this
+
+        double autoForward = 0.0;
+
+        if (targetVisible) {
+            // distanceM = current measured distance (meters)
+            double distanceError = distanceM - desiredRangeM;
+
+            if (Math.abs(distanceError) > rangeDeadbandM) {
+                double forwardCmd = distanceError * kPRange;
+
+                // Clamp to a gentle speed
+                forwardCmd = MathUtil.clamp(forwardCmd, -maxAutoSpeedPct, maxAutoSpeedPct);
+
+                // Map to m/s
+                autoForward = forwardCmd * Constants.MAX_SPEED;
+
+                // SAFETY: if we are already inside minDistanceM, NEVER drive closer.
+                if (distanceM < minDistanceM && autoForward > 0) {
+                    autoForward = 0.0;
+                }
+            } else {
+                autoForward = 0.0;
+            }
+
+            // When we see the tag, use auto forward control (you can blend with driver if you want)
+            forward = autoForward;
+
+            // Optional: log what’s happening so you can see the distance vs desired
+            SmartDashboard.putNumber("TagDistanceM", distanceM);
+            SmartDashboard.putNumber("DesiredRangeM", desiredRangeM);
+            SmartDashboard.putNumber("AutoForwardCmd", forward);
+            
+            
+        } else {
+            // No tag? driver gets full forward/back
+            forward = driverForward;
+        }
+        // ---- Drive with driver strafe + vision forward + vision turn ----
+        drive(
+            new Translation2d(forward, strafe),
+            turn,
+            false
+        );
+
+    }).withName("AimAndDriveAtTagTeleop_" + tagId);
+}
 /**
  * Auto / PathPlanner command that ONLY aims at a tag (no driving forward).
  *
