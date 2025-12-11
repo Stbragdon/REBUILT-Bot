@@ -20,7 +20,7 @@ import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
 import edu.wpi.first.wpilibj2.command.button.Trigger;
 import frc.robot.Constants.OperatorConstants;
 import frc.robot.subsystems.swervedrive.SwerveSubsystem;
-
+import frc.robot.subsystems.swervedrive.Vision;
 
 import java.io.File;
 
@@ -49,7 +49,7 @@ public class RobotContainer
   SwerveInputStream driveAngularVelocity = SwerveInputStream.of(drivebase.getSwerveDrive(),
                                                                 () -> driverXbox.getLeftY() * -1,
                                                                 () -> driverXbox.getLeftX() * -1)
-                                                            .withControllerRotationAxis(driverXbox::getRightX)
+                                                            .withControllerRotationAxis(() -> -driverXbox.getRightX())
                                                             .deadband(OperatorConstants.DEADBAND)
                                                             .scaleTranslation(0.8)
                                                             .allianceRelativeControl(true);
@@ -168,7 +168,7 @@ public class RobotContainer
 
       driverXbox.x().whileTrue(Commands.runOnce(drivebase::lock, drivebase).repeatedly());
       driverXbox.y().whileTrue(drivebase.driveToDistanceCommand(1.0, 0.2));
-      driverXbox.start().onTrue((Commands.runOnce(drivebase::zeroGyro)));
+      driverXbox.start().onTrue((Commands.runOnce(drivebase::zeroGyroWithAlliance)));
       driverXbox.back().whileTrue(drivebase.centerModulesCommand());
       driverXbox.leftBumper().onTrue(Commands.none());
       driverXbox.rightBumper().onTrue(Commands.none());
@@ -176,7 +176,7 @@ public class RobotContainer
     {
       driverXbox.x().onTrue((Commands.runOnce(drivebase::zeroGyro)));
       driverXbox.y().onTrue(Commands.runOnce(drivebase::addFakeVisionReading));
-      driverXbox.a().whileTrue(drivebase.aimAndDriveAtTag(driverXbox, camera, 1));
+      driverXbox.a().whileTrue(drivebase.aimAtTagTeleopCommand(driverXbox, camera, 1));
       driverXbox.back().whileTrue(Commands.none());
       driverXbox.leftBumper().whileTrue(Commands.runOnce(drivebase::lock, drivebase).repeatedly());
       driverXbox.rightBumper().onTrue(Commands.none());

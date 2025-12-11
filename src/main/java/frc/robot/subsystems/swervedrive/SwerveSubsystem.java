@@ -6,6 +6,19 @@ package frc.robot.subsystems.swervedrive;
 
 import static edu.wpi.first.units.Units.Meter;
 
+import java.io.File;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
+
+import org.json.simple.parser.ParseException;
+import org.photonvision.PhotonCamera;
+import org.photonvision.targeting.PhotonPipelineResult;
+import org.photonvision.targeting.PhotonTrackedTarget;
+
 import com.pathplanner.lib.auto.AutoBuilder;
 import com.pathplanner.lib.commands.PathPlannerAuto;
 import com.pathplanner.lib.commands.PathfindingCommand;
@@ -38,18 +51,6 @@ import edu.wpi.first.wpilibj2.command.button.RobotModeTriggers;
 import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine.Config;
 import frc.robot.Constants;
 import frc.robot.subsystems.swervedrive.Vision.Cameras;
-import java.io.File;
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.DoubleSupplier;
-import java.util.function.Supplier;
-import org.json.simple.parser.ParseException;
-import org.photonvision.PhotonCamera;
-import org.photonvision.targeting.PhotonPipelineResult;
-import org.photonvision.targeting.PhotonTrackedTarget;
-
 import swervelib.SwerveController;
 import swervelib.SwerveDrive;
 import swervelib.SwerveDriveTest;
@@ -76,7 +77,7 @@ public class SwerveSubsystem extends SubsystemBase
    */
   private       Vision      vision;
 
-  private boolean aimTargetVisible = false;
+  private boolean aimTargetVisible = true;
   private double aimTargetYawDeg = 0.0;
 
   /**
@@ -231,235 +232,7 @@ public class SwerveSubsystem extends SubsystemBase
     // IF USING CUSTOM PATHFINDER ADD BEFORE THIS LINE
     PathfindingCommand.warmupCommand().schedule();
   }
-
-  /**
-   * Aim the robot at the target returned by PhotonVision.
-   *
-   * @return A {@link Command} which will run the alignment.
-   */
-
-
-   // TELEOP WORKABLE VISION NEEDS TUNING
-  public Command aimAtTagTeleopCommand(
-        CommandXboxController controller,
-        PhotonCamera camera,
-        int tagId
-) {
-    return this.run(() -> {
-
-        // Driver keeps translation control
-        double forward = -controller.getLeftY() * Constants.MAX_SPEED;
-        double strafe  = -controller.getLeftX() * Constants.MAX_SPEED;
-
-        double turn = 0.0;
-
-        boolean targetVisible = false;
-        double targetYawDeg = 0.0;
-
-        // ---- Vision ----
-        var results = camera.getAllUnreadResults();
-        if (!results.isEmpty()) {
-            var result = results.get(results.size() - 1);
-            if (result.hasTargets()) {
-                for (PhotonTrackedTarget t : result.getTargets()) {
-                    if (t.getFiducialId() == tagId) {
-                        targetYawDeg = t.getYaw();
-                        targetVisible = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // ---- Aim-only rotation control ----
-        final double kP = 0.012; // Pretty tight tune
-        final double yawDeadband = 1.5;
-
-        if (targetVisible && Math.abs(targetYawDeg) > yawDeadband) {
-            double turnCmd = targetYawDeg * kP;
-            turnCmd = MathUtil.clamp(turnCmd, -1.0, 1.0);
-            turn = turnCmd * Constants.MAX_ANGULAR_VELOCITY;
-        } else {
-            turn = 0;
-        }
-
-        // ---- Drive with driver translation + vision rotation ----
-        drive(
-            new Translation2d(forward, strafe),
-            turn,
-            true   // still field-relative for driver
-        );
-
-    }).withName("AimAtTagTeleop_" + tagId);
-}
-
-public Command aimAndDriveAtTag(
-        CommandXboxController controller,
-        PhotonCamera camera,
-        int tagId
-) {
-    return this.run(() -> {
-
-        // ---- Driver translation input ----
-        double driverForward = -controller.getLeftY() * Constants.MAX_SPEED;
-        double strafe        = -controller.getLeftX() * Constants.MAX_SPEED;
-
-        double forward = 0.0;
-        double turn    = 0.0;
-
-        boolean targetVisible = false;
-        double targetYawDeg   = 0.0;
-        double distanceM      = 0.0; // camera → tag distance
-
-        // ---- Vision ----
-        var results = camera.getAllUnreadResults();
-        if (!results.isEmpty()) {
-            var result = results.get(results.size() - 1);
-            if (result.hasTargets()) {
-                for (PhotonTrackedTarget t : result.getTargets()) {
-                    if (t.getFiducialId() == tagId) {
-
-                        targetYawDeg = t.getYaw();
-
-                        // Get camera-to-target transform.
-                        var camToTarget = t.getBestCameraToTarget();
-
-                        // Use absolute forward distance so sign issues don't kill us.
-                        // If this still looks wrong on the robot, try getZ() here instead.
-                        distanceM = camToTarget.getX();
-
-                        targetVisible = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // ---- Aim-only rotation control ----
-        final double kPYaw       = 0.012;
-        final double yawDeadband = 1.5; // degrees
-
-        if (targetVisible && Math.abs(targetYawDeg) > yawDeadband) {
-            double turnCmd = targetYawDeg * kPYaw;
-            turnCmd = MathUtil.clamp(turnCmd, -1.0, 1.0);
-            turn = turnCmd * Constants.MAX_ANGULAR_VELOCITY;
-        } else {
-            turn = 0.0;
-        }
-
-        // ---- Range (forward/backward) control ----
-        // Desired stand-off distance camera↔tag.
-        final double desiredRangeM   = 10;   // try 2.5–3.0 to stay WELL back
-        final double kPRange         = 0.5;   // start small, we can bump later
-        final double rangeDeadbandM  = 0.05;  // ±5 cm
-        final double maxAutoSpeedPct = 0.3;   // % of MAX_SPEED for auto drive (nice and slow)
-
-        // Absolute "never get closer than this" safety distance:
-        final double minDistanceM    = 1.5;   // hard floor — won’t drive closer than this
-
-        double autoForward = 0.0;
-
-        if (targetVisible) {
-            // distanceM = current measured distance (meters)
-            double distanceError = distanceM - desiredRangeM;
-
-            if (Math.abs(distanceError) > rangeDeadbandM) {
-                double forwardCmd = distanceError * kPRange;
-
-                // Clamp to a gentle speed
-                forwardCmd = MathUtil.clamp(forwardCmd, -maxAutoSpeedPct, maxAutoSpeedPct);
-
-                // Map to m/s
-                autoForward = forwardCmd * Constants.MAX_SPEED;
-
-                // SAFETY: if we are already inside minDistanceM, NEVER drive closer.
-                if (distanceM < minDistanceM && autoForward > 0) {
-                    autoForward = 0.0;
-                }
-            } else {
-                autoForward = 0.0;
-            }
-
-            // When we see the tag, use auto forward control (you can blend with driver if you want)
-            forward = autoForward;
-
-            // Optional: log what’s happening so you can see the distance vs desired
-            SmartDashboard.putNumber("TagDistanceM", distanceM);
-            SmartDashboard.putNumber("DesiredRangeM", desiredRangeM);
-            SmartDashboard.putNumber("AutoForwardCmd", forward);
-            
-            
-        } else {
-            // No tag? driver gets full forward/back
-            forward = driverForward;
-        }
-        // ---- Drive with driver strafe + vision forward + vision turn ----
-        drive(
-            new Translation2d(forward, strafe),
-            turn,
-            false
-        );
-
-    }).withName("AimAndDriveAtTagTeleop_" + tagId);
-}
-/**
- * Auto / PathPlanner command that ONLY aims at a tag (no driving forward).
- *
- * @param camera PhotonCamera to use
- * @param tagId  AprilTag ID to aim at
- * NEEDS TUNING
- */
-public Command aimAtTagCommand(PhotonCamera camera, int tagId) {
-
-  return Commands.run(() -> {
-
-      double turn = 0.0;
-      boolean targetVisible = false;
-      double targetYawDeg = 0.0;
-
-      // ---- Get vision results ----
-      var results = camera.getAllUnreadResults();
-      if (!results.isEmpty()) {
-          var result = results.get(results.size() - 1); // latest frame
-          if (result.hasTargets()) {
-              for (PhotonTrackedTarget target : result.getTargets()) {
-                  if (target.getFiducialId() == tagId) {
-                      targetYawDeg = target.getYaw();
-                      targetVisible = true;
-                      break;
-                  }
-              }
-          }
-      }
-
-      // Save for .until(...)
-      aimTargetVisible = targetVisible;
-      aimTargetYawDeg  = targetYawDeg;
-
-      // ---- Rotation-only P controller ----
-      if (targetVisible && Math.abs(targetYawDeg) > 1.5) {
-          double turnCommand = targetYawDeg * 0.015;
-          turnCommand = MathUtil.clamp(turnCommand, -1.0, 1.0);
-          turn = turnCommand * Constants.MAX_ANGULAR_VELOCITY;
-      } else {
-          turn = 0.0; // Close enough or no target
-      }
-
-      // ---- Drive rotation only, no translation ----
-      Translation2d translation = new Translation2d(0.0, 0.0);
-      boolean fieldRelative = false; // robot-relative turn
-
-      drive(translation, turn, fieldRelative);
-
-      // Debug (optional)
-      SmartDashboard.putBoolean("AimAtTag Visible", targetVisible);
-      SmartDashboard.putNumber("AimAtTag Yaw", targetYawDeg);
-
-  }, this)
-  .until(() -> aimTargetVisible && Math.abs(aimTargetYawDeg) < 1.5)
-  .withTimeout(2.0)   // safety timeout
-  .withName("AimAtTag_" + tagId);
-}
+  
   /**
    * Get the path follower with events.
    *
@@ -944,4 +717,262 @@ public Command aimAtTagCommand(PhotonCamera camera, int tagId) {
   {
     return swerveDrive;
   }
+
+  // ------- Vision targeting methods -------
+  
+  /**
+   * Aim the robot at the target returned by PhotonVision.
+   *
+   * @return A {@link Command} which will run the alignment.
+   */
+
+
+   // TELEOP WORKABLE VISION NEEDS TUNING
+   public Command aimAtTagTeleopCommand(
+    CommandXboxController controller,
+    PhotonCamera camera,
+    int tagId
+) {
+return this.run(() -> {
+
+    // Driver keeps translation control
+    double forward = -controller.getLeftY() * Constants.MAX_SPEED;
+    double strafe  = -controller.getLeftX() * Constants.MAX_SPEED;
+
+    double turn = 0.0;
+
+    boolean targetVisible = false;
+    double targetYawDeg = 0.0;
+
+    // ---- Vision ----
+    var results = camera.getAllUnreadResults();
+    if (!results.isEmpty()) {
+        var result = results.get(results.size() - 1);
+        if (result.hasTargets()) {
+            for (PhotonTrackedTarget t : result.getTargets()) {
+                if (t.getFiducialId() == tagId) {
+                    targetYawDeg = t.getYaw();
+                    targetVisible = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // ---- Aim-only rotation control ----
+    final double kP = 0.012; // Pretty tight tune
+    final double yawDeadband = 1.5;
+
+    if (targetVisible && Math.abs(targetYawDeg) > yawDeadband) {
+        double turnCmd = targetYawDeg * kP;
+        turnCmd = MathUtil.clamp(turnCmd, -1.0, 1.0);
+        turn = turnCmd * Constants.MAX_ANGULAR_VELOCITY;
+    } else {
+        turn = 0;
+    }
+
+    // ---- Drive with driver translation + vision rotation ----
+    drive(
+        new Translation2d(forward, strafe),
+        -turn,
+        false   // robot-relative to avoid field misalignments
+    );
+
+}).withName("AimAtTagTeleop_" + tagId);
+}
+
+public Command aimAndDriveAtTag(
+    CommandXboxController controller,
+    PhotonCamera camera,
+    int tagId
+) {
+return this.run(() -> {
+
+    // ---- Driver translation input ----
+    double driverForward = -controller.getLeftY() * Constants.MAX_SPEED;
+    double strafe        = -controller.getLeftX() * Constants.MAX_SPEED;
+
+    double forward = 0.0;
+    double turn    = 0.0;
+
+    boolean targetVisible = false;
+    double targetYawDeg   = 0.0;
+    double distanceM      = 0.0; // camera → tag distance
+
+    // ---- Vision ----
+    var results = camera.getAllUnreadResults();
+    if (!results.isEmpty()) {
+        var result = results.get(results.size() - 1);
+        if (result.hasTargets()) {
+            for (PhotonTrackedTarget t : result.getTargets()) {
+                if (t.getFiducialId() == tagId) {
+
+                    targetYawDeg = t.getYaw();
+
+                    // Get camera-to-target transform.
+                    var camToTarget = t.getBestCameraToTarget();
+
+                    // Use absolute forward distance so sign issues don't kill us.
+                    // If this still looks wrong on the robot, try getZ() here instead.
+                    distanceM = camToTarget.getX();
+                    SmartDashboard.putNumber("CamToTag_X", camToTarget.getX());
+                    SmartDashboard.putNumber("CamToTag_Z", camToTarget.getZ());
+
+                    targetVisible = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // ---- Aim-only rotation control ----
+    final double kPYaw       = 0.012;
+    final double yawDeadband = 1.5; // degrees
+
+    if (targetVisible && Math.abs(targetYawDeg) > yawDeadband) {
+        double turnCmd = targetYawDeg * kPYaw;
+        turnCmd = MathUtil.clamp(turnCmd, -1.0, 1.0);
+        turn = turnCmd * Constants.MAX_ANGULAR_VELOCITY;
+    } else {
+        turn = 0.0;
+    }
+
+    // ---- Range (forward/backward) control ----
+    // Desired stand-off distance camera↔tag.
+    final double desiredRangeM   = 3;   // try 2.5–3.0 to stay WELL back
+    final double kPRange         = 0.5;   // start small, we can bump later
+    final double rangeDeadbandM  = 0.05;  // ±5 cm
+    final double maxAutoSpeedPct = 0.3;   // % of MAX_SPEED for auto drive (nice and slow)
+
+    // Absolute "never get closer than this" safety distance:
+    final double minDistanceM    = 1.5;   // hard floor — won’t drive closer than this
+
+    double autoForward = 0.0;
+
+    if (targetVisible) {
+        // distanceM = current measured distance (meters)
+        double distanceError = distanceM - desiredRangeM;
+
+        if (Math.abs(distanceError) > rangeDeadbandM) {
+            double forwardCmd = distanceError * kPRange;
+
+            // Clamp to a gentle speed
+            forwardCmd = MathUtil.clamp(forwardCmd, -maxAutoSpeedPct, maxAutoSpeedPct);
+
+            // Map to m/s
+            autoForward = forwardCmd * Constants.MAX_SPEED;
+
+            // SAFETY: if we are already inside minDistanceM, NEVER drive closer.
+            if (distanceM < minDistanceM && autoForward > 0) {
+                autoForward = 0.0;
+            }
+        } else {
+            autoForward = 0.0;
+        }
+
+        // When we see the tag, use auto forward control (you can blend with driver if you want)
+        forward = autoForward;
+
+        // Optional: log what’s happening so you can see the distance vs desired
+        SmartDashboard.putNumber("TagDistanceM", distanceM);
+        SmartDashboard.putNumber("DesiredRangeM", desiredRangeM);
+        SmartDashboard.putNumber("AutoForwardCmd", forward);
+        
+        
+    } else {
+        // No tag? driver gets full forward/back
+        forward = driverForward;
+    }
+    // ---- Drive with driver strafe + vision forward + vision turn ----
+    drive(
+        new Translation2d(forward, strafe),
+        -turn,
+        false   // robot-relative to avoid field misalignments
+    );
+
+}).withName("AimAndDriveAtTagTeleop_" + tagId);
+}
+/**
+* Auto / PathPlanner command that ONLY aims at a tag (no driving forward).
+*
+* @param camera PhotonCamera to use
+* @param tagId  AprilTag ID to aim at
+* NEEDS TUNING
+*/
+public Command aimAtTagCommand(PhotonCamera camera, int tagId) {
+
+return Commands.run(() -> {
+
+  double turn = 0.0;
+  boolean targetVisible = false;
+  double targetYawDeg = 0.0;
+
+  // ---- Get vision results ----
+  var results = camera.getAllUnreadResults();
+  if (!results.isEmpty()) {
+      var result = results.get(results.size() - 1); // latest frame
+      if (result.hasTargets()) {
+          for (PhotonTrackedTarget target : result.getTargets()) {
+              if (target.getFiducialId() == tagId) {
+                  targetYawDeg = target.getYaw();
+                  targetVisible = true;
+                  break;
+              }
+          }
+      }
+  }
+
+  // Save for .until(...)
+  aimTargetVisible = targetVisible;
+  aimTargetYawDeg  = targetYawDeg;
+
+  // ---- Rotation-only P controller ----
+  if (targetVisible && Math.abs(targetYawDeg) > 1.5) {
+      double turnCommand = targetYawDeg * 0.015;
+      turnCommand = MathUtil.clamp(turnCommand, -1.0, 1.0);
+      turn = turnCommand * Constants.MAX_ANGULAR_VELOCITY;
+  } else {
+      turn = 0.0; // Close enough or no target
+  }
+
+  // ---- Drive rotation only, no translation ----
+  Translation2d translation = new Translation2d(0.0, 0.0);
+  boolean fieldRelative = false; // robot-relative turn
+
+  drive(translation, turn, fieldRelative);
+
+  // Debug (optional)
+  SmartDashboard.putBoolean("AimAtTag Visible", targetVisible);
+  SmartDashboard.putNumber("AimAtTag Yaw", targetYawDeg);
+
+}, this)
+.until(() -> aimTargetVisible && Math.abs(aimTargetYawDeg) < 1.5)
+.withTimeout(2.0)   // safety timeout
+.withName("AimAtTag_" + tagId);
+}
+
+  /**
+   * Aim the robot at the target returned by PhotonVision.
+   *
+   * @return A {@link Command} which will run the alignment.
+   */
+  public Command aimAtTarget(Cameras camera)
+  {
+
+    return run(() -> {
+      Optional<PhotonPipelineResult> resultO = camera.getBestResult();
+      if (resultO.isPresent())
+      {
+        var result = resultO.get();
+        if (result.hasTargets())
+        {
+          drive(getTargetSpeeds(0,
+                                0,
+                                Rotation2d.fromDegrees(result.getBestTarget()
+                                                             .getYaw()))); // Not sure if this will work, more math may be required.
+        }
+      }
+    });
+  }
+
 }
